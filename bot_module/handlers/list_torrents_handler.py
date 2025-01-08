@@ -14,23 +14,27 @@ async def list_torrents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     torrent_manager = context.bot_data.get("torrent_manager")
     if not torrent_manager:
+        logger.error("TorrentManager not initialized in /list_torrents.")
         await update.message.reply_text("Error: TorrentManager not initialized.")
         return
 
     torrents = torrent_manager.list_torrents()
 
     if "error" in torrents:
+        logger.error(f"Error fetching torrents: {torrents['error']}")
         await update.message.reply_text(f"Error: {torrents['error']}")
         return
 
     if not torrents:
+        logger.info("No torrents found in aria2.")
         await update.message.reply_text("No torrents found.")
         return
 
     response = "\n\n".join(
         [
-            f"Name: {torrent['name']}\nState: {torrent['state']}\nProgress: {torrent['progress']}"
+            f"Name: {torrent['name']}\nState: {torrent['status']}\nProgress: {torrent['progress']}"
             for torrent in torrents
         ]
     )
+    logger.info("Successfully fetched and listed torrents.")
     await update.message.reply_text(response)
