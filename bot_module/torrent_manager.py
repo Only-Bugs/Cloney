@@ -1,8 +1,6 @@
 # bot/torrent_manager.py
 import qbittorrentapi
 
-from config.config import QB_HOST, QB_USERNAME, QB_PASSWORD
-
 
 class TorrentManager:
     """
@@ -35,39 +33,28 @@ class TorrentManager:
         Check if the qBittorrent API is reachable and the client is authenticated.
 
         Returns:
-            dict: A dictionary containing 'online' and 'connected' statuses.
+            dict: A dictionary containing 'online', 'connected', and 'error' (if any).
         """
-        online = False
-        connected = False
+        status = {"online": False, "connected": False, "error": None}
         try:
             # Check API uptime
-            online = self.client.app_version() is not None
+            if self.client.app_version():
+                status["online"] = True
+            else:
+                status["online"] = False
+
             # Check if the client is authenticated
-            connected = self.is_connected()
-        except qbittorrentapi.APIConnectionError:
-            online = False
-        except qbittorrentapi.LoginFailed:
-            connected = False
-        return {"online": online, "connected": connected}
+            if self.is_connected():
+                status["connected"] = True
+            else:
+                status["connected"] = False
 
-    def main():
-        """
-        Initializes the Telegram bot and sets up command handlers.
-        """
-        # Initialize the bot application
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        except qbittorrentapi.APIConnectionError as e:
+            status["error"] = f"API connection error: {str(e)}"
+        except qbittorrentapi.LoginFailed as e:
+            status["error"] = f"Login failed: {str(e)}"
+        except Exception as e:
+            status["error"] = f"Unexpected error: {str(e)}"
 
-        # Add configuration to bot_data
-        application.bot_data.update({
-            "QB_HOST": QB_HOST,
-            "QB_USERNAME": QB_USERNAME,
-            "QB_PASSWORD": QB_PASSWORD
-        })
-
-        # Add command handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("status", status))
-
-        # Start the bot
-        logger.info("Bot is starting...")
-        application.run_polling()
+        print(f"DEBUG: checkAPIOnlineAndConnectedStatus() -> {status}")
+        return status
