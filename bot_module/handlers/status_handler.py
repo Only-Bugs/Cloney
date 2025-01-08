@@ -21,7 +21,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         torrent_manager = context.bot_data["torrent_manager"]
-        status_result = torrent_manager.checkAPIOnlineAndConnectedStatus()
+        status_result = torrent_manager.check_api_status()
         api_status = "✅ Online" if status_result.get("online") else "❌ Offline"
         connection_status = "✅ Connected" if status_result.get("connected") else "❌ Not Connected"
         error_message = status_result.get("error")
