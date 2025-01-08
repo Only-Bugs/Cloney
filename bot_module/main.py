@@ -7,13 +7,14 @@ import sys
 import os
 import time
 import logging
+import requests
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from bot.torrent_manager import TorrentManager
+from bot_module.torrent_manager import TorrentManager
 
 
-# Add the project root directory to sys.path
+# Add the project root directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import configuration
@@ -52,32 +53,42 @@ def get_uptime():
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles the /status command.
-    Sends the API status and bot uptime to the user.
+    Handles the /status command to check API status and system uptime.
 
     Args:
         update (Update): Incoming Telegram update.
         context (ContextTypes.DEFAULT_TYPE): Telegram bot context.
     """
-    # Initialize TorrentManager with qBittorrent credentials
-    manager = TorrentManager(
-        host=context.bot_data.get("QB_HOST"),
-        username=context.bot_data.get("QB_USERNAME"),
-        password=context.bot_data.get("QB_PASSWORD")
+    from datetime import timedelta
+
+    # Get bot uptime
+    bot_start_time = context.bot_data.get("start_time")
+    uptime = timedelta(seconds=(time.time() - bot_start_time)) if bot_start_time else "Unknown"
+
+    # API Connection Check
+    api_status = "❌ Offline"
+    connection_status = "❌ Not Connected"
+
+    try:
+        # Replace with the actual API health check endpoint
+        api_url = "http://localhost:8080/api/v2/status"
+        response = requests.get(api_url, timeout=5)
+        print(f"API response: {response.status_code}, {response.text}")
+
+        if response.status_code == 200:
+            api_status = "✅ Online"
+        else:
+            api_status = "❌ Offline"
+    except Exception as e:
+        print(f"Error while checking API status: {str(e)}")
+
+    # Send the status message
+    await update.message.reply_text(
+        f"API Status: {api_status}\n"
+        f"Connection Status: {connection_status}\n"
+        f"Bot Uptime: {uptime}"
     )
 
-    # Check API and connection status
-    api_status = manager.checkAPIOnlineAndConnectedStatus()
-    bot_uptime = get_uptime()
-
-    # Build the response message
-    response = (
-        f"API Status: {'✅ Online' if api_status['online'] else '❌ Offline'}\n"
-        f"Connection Status: {'✅ Connected' if api_status['connected'] else '❌ Not Connected'}\n"
-        f"Bot Uptime: {bot_uptime}"
-    )
-
-    await update.message.reply_text(response)
 
 async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """

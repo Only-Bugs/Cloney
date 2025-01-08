@@ -1,6 +1,9 @@
 # bot/torrent_manager.py
 import qbittorrentapi
 
+from config.config import QB_HOST, QB_USERNAME, QB_PASSWORD
+
+
 class TorrentManager:
     """
     A manager to interact with qBittorrent's Web API.
@@ -46,3 +49,25 @@ class TorrentManager:
         except qbittorrentapi.LoginFailed:
             connected = False
         return {"online": online, "connected": connected}
+
+    def main():
+        """
+        Initializes the Telegram bot and sets up command handlers.
+        """
+        # Initialize the bot application
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+        # Add configuration to bot_data
+        application.bot_data.update({
+            "QB_HOST": QB_HOST,
+            "QB_USERNAME": QB_USERNAME,
+            "QB_PASSWORD": QB_PASSWORD
+        })
+
+        # Add command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("status", status))
+
+        # Start the bot
+        logger.info("Bot is starting...")
+        application.run_polling()
