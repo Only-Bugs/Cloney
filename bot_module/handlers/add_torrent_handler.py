@@ -3,8 +3,9 @@ from telegram.ext import ContextTypes
 import logging
 import asyncio
 from datetime import timedelta
-from pathlib import Path, PosixPath
+from pathlib import Path
 
+# 🔹 Global variables
 last_message = None
 logger = logging.getLogger(__name__)
 
@@ -30,10 +31,9 @@ async def add_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Error: TorrentManager not initialized.")
         return
 
-    # Add the torrent and get the GID
+    # 🔹 Add the torrent and get the GID
     gid = torrent_manager.add_torrent(magnet_link)
-    
-    # 🔹 Ensure gid is a valid string
+
     if not isinstance(gid, str):
         logger.error(f"Failed to add torrent: Unexpected GID type: {type(gid)}")
         await update.message.reply_text("Error: Failed to retrieve a valid GID for the torrent.")
@@ -42,9 +42,35 @@ async def add_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info(f"Torrent added successfully with GID: {gid}")
     await update.message.reply_text(f"✅ Torrent added successfully! GID: `{gid}`", parse_mode="Markdown")
 
-    # Retry fetching torrent details
-    added_torrent = None
-    for attempt in range(10):  # Retry up to 10 times
+    # 🔹 Fetch torrent details (Using the new retry helper function)
+    added_torrent = await fetch_torrent_details(context, gid, torrent_manager)
+
+    if not added_torrent:
+        await update.message.reply_text("⚠️ Torrent added, but unable to fetch details after multiple attempts.")
+        return
+
+    # 🔹 Format & send initial progress message
+    message = format_torrent_message(added_torrent, gid)
+    sent_message = await update.message.reply_text(message, parse_mode="Markdown")
+
+    # 🔹 Start tracking progress
+    await track_torrent_progress(context, update.effective_chat.id, sent_message.message_id, gid)
+
+
+async def fetch_torrent_details(context, gid, torrent_manager, max_retries=10):
+    """
+    Fetches torrent details with retries if metadata is not ready.
+
+    Args:
+        context (ContextTypes.DEFAULT_TYPE): Telegram bot context.
+        gid (str): The GID of the torrent.
+        torrent_manager (TorrentManager): The TorrentManager instance.
+        max_retries (int): Number of retries before failing.
+
+    Returns:
+        dict or None: Torrent details if successful, None if retries exceeded.
+    """
+    for attempt in range(max_retries):
         torrents = torrent_manager.list_torrents()
 
         if not isinstance(torrents, list):
@@ -54,56 +80,15 @@ async def add_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         for torrent in torrents:
             if isinstance(torrent, dict) and torrent.get("gid") == gid:
-                added_torrent = torrent
-                break
+                logger.info(f"✅ Torrent details fetched successfully on attempt {attempt + 1}.")
+                return torrent
 
-        if added_torrent:
-            logger.info(f"✅ Torrent details fetched successfully on attempt {attempt + 1}.")
-            break
+        logger.warning(f"⚠️ Torrent metadata not ready yet, retrying ({attempt + 1}/{max_retries})...")
+        await asyncio.sleep(2)
 
-        logger.info(f"🔄 Retrying... Attempt {attempt + 1}")
-        await asyncio.sleep(2)  # Wait before retrying
+    logger.error("❌ Failed to fetch torrent details after multiple attempts.")
+    return None
 
-    if not added_torrent:
-        logger.error("❌ Failed to fetch torrent details after multiple attempts.")
-        await update.message.reply_text("⚠️ Torrent added, but unable to fetch details after multiple attempts.")
-        return
-
-    # 🔹 Fix: Ensure ETA is properly formatted
-    eta_seconds = added_torrent.get('eta', 0)
-    if isinstance(eta_seconds, timedelta):
-        eta_seconds = int(eta_seconds.total_seconds())
-    elif not isinstance(eta_seconds, int) or eta_seconds < 0:
-        eta_seconds = 0
-    elif eta_seconds > 999999999:
-        eta_seconds = 999999999
-
-    eta_display = str(timedelta(seconds=eta_seconds)) if eta_seconds > 0 else "N/A"
-
-    # 🔹 Fix: Ensure `files` is a list of strings
-    file_list = added_torrent.get("files", [])
-    if isinstance(file_list, PosixPath):
-        file_list = [str(file_list)]
-    elif isinstance(file_list, list):
-        file_list = [str(file) for file in file_list]
-    else:
-        file_list = []
-
-    file_list_display = "\n".join([f"📂 `{file}`" for file in file_list]) if file_list else "No files available yet."
-
-    message = (
-        f"📂 *Torrent Name:* `{added_torrent['name']}`\n"
-        f"📊 *Progress:* `{added_torrent['progress']}%`\n"
-        f"📌 *State:* `{added_torrent['status']}`\n"
-        f"⏳ *ETA:* `{eta_display}`\n"
-        f"🆔 *GID:* `{gid}`\n"
-        f"📄 *Files:*\n{file_list_display}"
-    )
-
-    sent_message = await update.message.reply_text(message, parse_mode="Markdown")
-
-    # Start tracking the torrent progress
-    await track_torrent_progress(context, update.effective_chat.id, sent_message.message_id, gid)
 
 async def track_torrent_progress(context, chat_id, message_id, gid):
     """
@@ -115,80 +100,108 @@ async def track_torrent_progress(context, chat_id, message_id, gid):
         message_id (int): Telegram message ID.
         gid (str): The GID of the torrent.
     """
-    global last_message  # Use a global variable to track last sent message
+    global last_message
     torrent_manager = context.bot_data.get("torrent_manager")
     if not torrent_manager:
         return
 
-    retry_count = 0  # Track retries for fetching files
+    retry_count = 0
 
     while True:
-        status = torrent_manager.get_torrent_status(gid)  # Get status from Aria2
-
-        # 🔹 Debugging: Log the FULL status response from Aria2
+        status = torrent_manager.get_torrent_status(gid)
         logger.info(f"DEBUG: Full Aria2 response (Attempt {retry_count}): {status}")
 
         if "error" in status:
             await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
+                chat_id=chat_id, message_id=message_id,
                 text=f"⚠️ Error tracking torrent: `{status['error']}`",
                 parse_mode="Markdown",
             )
             break
 
         progress = float(status["progress"].replace("%", ""))
-        eta_display = "N/A"
-        if isinstance(status.get("eta"), int) and status["eta"] > 0 and status["eta"] < 86400:
-            eta_display = str(timedelta(seconds=status["eta"]))  # Convert seconds to readable time
+        eta_display = format_eta(status.get("eta"))
 
-        # 🔹 Debugging: Log what `files` contains
         raw_files = status.get("files", None)
         logger.info(f"DEBUG: Raw `files` data from Aria2 (Attempt {retry_count}): {raw_files}")
 
         if raw_files is None:
             retry_count += 1
-            if retry_count <= 15:  # Retry up to 15 times before failing
-                logger.warning(f"⚠️ Torrent metadata not ready yet, retrying ({retry_count}/15)...")
-                await asyncio.sleep(5)  # Wait before retrying
-                continue
+            if retry_count > 15:
+                file_list_display = "📡 Waiting for metadata..."
             else:
-                file_list = []  # Default to empty list after retries fail
-        elif isinstance(raw_files, list):
-            file_list = [str(file) for file in raw_files]
+                logger.warning(f"⚠️ Torrent metadata not ready yet, retrying ({retry_count}/15)...")
+                await asyncio.sleep(5)
+                continue
         else:
-            logger.warning(f"⚠️ Unexpected file list type: {type(raw_files)} - Defaulting to empty list.")
-            file_list = []
+            file_list_display = format_file_list(raw_files)
 
-        file_list_display = "\n".join([f"📂 `{file}`" for file in file_list]) if file_list else "📡 Waiting for metadata..."
+        new_message = format_torrent_message(status, gid, file_list_display)
 
-        # 🔹 Debugging: Log progress updates
-        logger.info(f"DEBUG: Progress: {progress}%, ETA: {eta_display}, Files: {file_list_display}")
-
-        torrent_name = status.get("name", "Unknown").replace("[METADATA]", "").strip()
-
-        new_message = (
-            f"📂 *Torrent Name:* `{torrent_name}`\n"
-            f"📊 *Progress:* `{progress}%`\n"
-            f"📌 *State:* `{status['status']}`\n"
-            f"⏳ *ETA:* `{eta_display}`\n"
-            f"🆔 *GID:* `{gid}`\n"
-            f"📄 *Files:*\n{file_list_display}"
-        )
-
-        # 🔹 Prevent unnecessary message updates
         if new_message != last_message:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_message, parse_mode="Markdown")
-            last_message = new_message  # Store last sent message
+            last_message = new_message
 
         if status["status"].lower() in ["seeding", "complete"]:
             await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
+                chat_id=chat_id, message_id=message_id,
                 text=f"{new_message}\n✅ *Download Complete!*",
                 parse_mode="Markdown",
             )
             break
 
-        await asyncio.sleep(3)  # 🔹 Update every 3 seconds
+        await asyncio.sleep(3)
 
+
+def format_torrent_message(torrent, gid, file_list_display="📡 Waiting for metadata..."):
+    """
+    Formats the torrent message for Telegram display.
+
+    Args:
+        torrent (dict): Torrent details.
+        gid (str): The GID of the torrent.
+        file_list_display (str): List of files or waiting message.
+
+    Returns:
+        str: Formatted message string.
+    """
+    return (
+        f"📂 *Torrent Name:* `{torrent.get('name', 'Unknown')}`\n"
+        f"📊 *Progress:* `{torrent.get('progress', '0%')}`\n"
+        f"📌 *State:* `{torrent.get('status', 'N/A')}`\n"
+        f"⏳ *ETA:* `{format_eta(torrent.get('eta'))}`\n"
+        f"🆔 *GID:* `{gid}`\n"
+        f"📄 *Files:*\n{file_list_display}"
+    )
+
+
+def format_eta(eta):
+    """
+    Formats ETA (time remaining) into a human-readable format.
+
+    Args:
+        eta (int or timedelta): Time remaining.
+
+    Returns:
+        str: Formatted ETA.
+    """
+    if isinstance(eta, timedelta):
+        eta = int(eta.total_seconds())
+    if not isinstance(eta, int) or eta < 0:
+        return "N/A"
+    return str(timedelta(seconds=eta)) if eta < 86400 else "N/A"
+
+
+def format_file_list(raw_files):
+    """
+    Ensures file list is properly formatted.
+
+    Args:
+        raw_files (list or None): List of file paths.
+
+    Returns:
+        str: Formatted file list string.
+    """
+    if isinstance(raw_files, list):
+        return "\n".join([f"📂 `{file}`" for file in raw_files])
+    return "📡 Waiting for metadata..."

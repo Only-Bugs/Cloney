@@ -1,64 +1,100 @@
+# bot_module/handlers/movie_search_handler.py
+
+import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from tmdbv3api import TMDb, Movie
-import logging
+from config.config import TMDB_API_KEY  # Fetch TMDb API Key from config
 
-# TMDb API Initialization
+# ✅ Ensure logs directory exists
+os.makedirs("logs", exist_ok=True)
+
+# ✅ Setup Separate Movie Search Logger
+MOVIE_SEARCH_LOG_FILE = "logs/movie_search.log"
+movie_search_logger = logging.getLogger("movie_search_logger")
+
+file_handler = logging.FileHandler(MOVIE_SEARCH_LOG_FILE)
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(formatter)
+movie_search_logger.addHandler(file_handler)
+
+# ✅ TMDb API Initialization
 tmdb = TMDb()
-tmdb.api_key = "YOUR_TMDB_API_KEY"  # Replace with your TMDb API key
+tmdb.api_key = TMDB_API_KEY  # Pulled from config
 tmdb.language = "en"
-tmdb.debug = True
-
-logger = logging.getLogger(__name__)
+tmdb.debug = False  # Debugging disabled for production
 
 async def movie_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Detects a text message as a potential movie search query and uses TMDb API to fetch results.
+    Detects a text message as a potential movie search query and fetches results from TMDb API.
+
+    Args:
+        update (Update): Incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): Telegram bot context.
     """
     user_message = update.message.text.strip()
 
-    # Ignore commands
+    # Ignore if the message is a command
     if user_message.startswith("/"):
         return
 
-    logger.info(f"Received potential movie search query: {user_message}")
+    movie_search_logger.info(f"🔍 User Search Query: {user_message}")
 
-    # Search for movies using TMDb API
     movie = Movie()
-    search_results = movie.search(user_message)
-
-    if not search_results:
-        await update.message.reply_text("No results found for your query.")
+    try:
+        search_results = movie.search(user_message)
+        search_results = list(search_results)  # ✅ Convert to list before slicing
+    except Exception as e:
+        movie_search_logger.error(f"❌ TMDb API Error: {str(e)}")
+        await update.message.reply_text("⚠️ An error occurred while searching for the movie. Please try again later.")
         return
 
-    # Create inline keyboard with results
-    keyboard = [
-        [InlineKeyboardButton(f"{result['title']} ({result['release_date'][:4] if result['release_date'] else 'N/A'})",
-                              callback_data=result['id'])]
-        for result in search_results[:5]  # Limit to the first 5 results
-    ]
+    if not search_results:
+        movie_search_logger.info(f"❌ No results found for query: {user_message}")
+        await update.message.reply_text("⚠️ No results found for your query. Please refine your search.")
+        return
+
+    # ✅ Log the first 5 results
+    movie_search_logger.info(f"🎥 Search Results for '{user_message}': {[m.title for m in search_results[:5]]}")
+
+    # ✅ Create inline keyboard with search results (limit to 5 results)
+    keyboard = []
+    for result in search_results[:100]:  # ✅ Now slicing works as expected
+        title = result.title
+        release_year = result.release_date[:4] if result.release_date else "N/A"
+        keyboard.append([InlineKeyboardButton(f"{title} ({release_year})", callback_data=str(result.id))])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        f"Results for: {user_message}",
+        f"🔎 *Results for:* `{user_message}`",
         reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
-
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles button clicks for search results.
+    Handles button clicks for search results, fetching detailed movie info from TMDb.
+
+    Args:
+        update (Update): Incoming Telegram update with callback query.
+        context (ContextTypes.DEFAULT_TYPE): Telegram bot context.
     """
     query = update.callback_query
     await query.answer()
 
     movie_id = query.data
-    logger.info(f"Selected movie ID: {movie_id}")
+    movie_search_logger.info(f"🎥 User selected movie ID: {movie_id}")
 
-    # Fetch movie details from TMDb API
     movie = Movie()
-    movie_details = movie.details(movie_id)
+    try:
+        movie_details = movie.details(movie_id)
+    except Exception as e:
+        movie_search_logger.error(f"❌ Failed to fetch movie details for ID {movie_id}: {str(e)}")
+        await query.edit_message_text("⚠️ Unable to fetch movie details. Please try again later.")
+        return
 
     # Extract relevant info
     title = movie_details.get("title", "N/A")
@@ -66,13 +102,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     release_date = movie_details.get("release_date", "N/A")
     vote_average = movie_details.get("vote_average", "N/A")
 
-    # Prepare the message
+    # ✅ Log movie selection
+    movie_search_logger.info(f"📜 Movie Details Retrieved: {title} (ID: {movie_id})")
+
+    # ✅ Prepare response message
     message = (
         f"🎬 *{title}*\n"
-        f"📅 Release Date: {release_date}\n"
-        f"⭐ Rating: {vote_average}/10\n\n"
-        f"📖 Description:\n{overview}\n"
+        f"📅 *Release Date:* `{release_date}`\n"
+        f"⭐ *Rating:* `{vote_average}/10`\n\n"
+        f"📖 *Overview:*\n_{overview}_"
     )
 
-    # Respond with movie details
+    # ✅ Respond with movie details
     await query.edit_message_text(text=message, parse_mode="Markdown")
